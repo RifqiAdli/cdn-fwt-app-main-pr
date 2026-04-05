@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
 };
 
@@ -17,20 +17,15 @@ Deno.serve(async (req) => {
 
   const url = new URL(req.url);
   const pathParts = url.pathname.split("/").filter(Boolean);
-  // paths: /cdn-api/files, /cdn-api/files/:id, /cdn-api/upload, /cdn-api/stats
 
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return new Response(JSON.stringify({ error: "Missing API key" }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "Missing API key" }, 401);
   }
 
   const apiKey = authHeader.replace("Bearer ", "");
   const keyHash = btoa(apiKey);
 
-  // Validate API key
   const { data: keyData } = await supabase
     .from("api_keys")
     .select("*")
@@ -39,21 +34,13 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (!keyData) {
-    return new Response(JSON.stringify({ error: "Invalid API key" }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "Invalid API key" }, 401);
   }
 
-  // Check expiry
   if (keyData.expires_at && new Date(keyData.expires_at) < new Date()) {
-    return new Response(JSON.stringify({ error: "API key expired" }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "API key expired" }, 401);
   }
 
-  // Update last used
   await supabase.from("api_keys").update({ last_used_at: new Date().toISOString() }).eq("id", keyData.id);
 
   const userId = keyData.user_id;
@@ -141,6 +128,38 @@ Deno.serve(async (req) => {
     }, 201);
   }
 
+  // PUT /files/:id (UPDATE)
+  if (req.method === "PUT" && secondLast === "files") {
+    const fileId = action;
+    if (!keyData.scopes?.includes("read")) {
+      return jsonResponse({ error: "Scope 'read' not permitted" }, 403);
+    }
+
+    const { data: file } = await supabase.from("files").select("*").eq("id", fileId).eq("user_id", userId).maybeSingle();
+    if (!file) return jsonResponse({ error: "File not found" }, 404);
+
+    const body = await req.json();
+    const updates: Record<string, any> = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.is_public !== undefined) updates.is_public = body.is_public;
+    if (body.tags !== undefined) updates.tags = body.tags;
+    if (body.metadata !== undefined) updates.metadata = body.metadata;
+
+    if (Object.keys(updates).length === 0) {
+      return jsonResponse({ error: "No fields to update" }, 400);
+    }
+
+    const { data: updated, error } = await supabase
+      .from("files")
+      .update(updates)
+      .eq("id", fileId)
+      .select()
+      .single();
+
+    if (error) return jsonResponse({ error: error.message }, 500);
+    return jsonResponse({ file: updated });
+  }
+
   // DELETE /files/:id
   if (req.method === "DELETE" && secondLast === "files") {
     const fileId = action;
@@ -165,8 +184,7 @@ function jsonResponse(body: any, status = 200) {
     status,
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+      ...corsHeaders,
     },
   });
 }

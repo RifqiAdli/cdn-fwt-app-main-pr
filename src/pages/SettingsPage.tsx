@@ -4,7 +4,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { formatBytes } from '@/lib/utils';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
-import { Key, Copy, Trash2, Plus, Eye, EyeOff, Loader2, Shield } from 'lucide-react';
+import { Key, Copy, Trash2, Plus, Eye, EyeOff, Loader2, Shield, Play } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -15,12 +15,21 @@ export default function SettingsPage() {
   const [justCreatedKey, setJustCreatedKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [stats, setStats] = useState<any>(null);
+  const [testing, setTesting] = useState(false);
+
+  const apiBaseUrl = `https://ckjwipxaftcqxtyskgxd.supabase.co/functions/v1/cdn-api`;
 
   useEffect(() => {
     if (!user) return;
     loadKeys();
     supabase.from('user_stats').select('*').eq('user_id', user.id).maybeSingle()
       .then(({ data }) => setStats(data));
+
+    const channel = supabase
+      .channel('settings-keys')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'api_keys', filter: `user_id=eq.${user.id}` }, () => loadKeys())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [user]);
 
   const loadKeys = async () => {
@@ -41,7 +50,7 @@ export default function SettingsPage() {
     if (!user || !keyName.trim()) return;
     setCreating(true);
     const rawKey = generateKey();
-    const keyHash = btoa(rawKey); // Simple hash for demo
+    const keyHash = btoa(rawKey);
 
     const { error } = await supabase.from('api_keys').insert({
       user_id: user.id,
@@ -73,13 +82,32 @@ export default function SettingsPage() {
     loadKeys();
   };
 
-  const apiBaseUrl = `${window.location.origin}/api/v1`;
+  const testApi = async () => {
+    if (!justCreatedKey && apiKeys.length === 0) {
+      toast.error('Create an API key first');
+      return;
+    }
+    setTesting(true);
+    try {
+      const res = await fetch(`${apiBaseUrl}/stats`, {
+        headers: { 'Authorization': `Bearer ${justCreatedKey || 'test'}` },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success('API is working! Stats retrieved.');
+      } else {
+        toast.error(`API error: ${data.error}`);
+      }
+    } catch (err) {
+      toast.error('Failed to reach API');
+    }
+    setTesting(false);
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-display font-bold">Settings</h1>
 
-      {/* Storage */}
       {stats && (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card p-5">
           <h2 className="text-sm font-medium mb-4">Storage Usage</h2>
@@ -98,38 +126,23 @@ export default function SettingsPage() {
         </motion.div>
       )}
 
-      {/* API Keys */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="glass-card p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-medium flex items-center gap-2"><Key className="w-4 h-4" /> API Keys</h2>
         </div>
 
-        {/* Create key */}
         <div className="flex gap-2 mb-4">
-          <input
-            placeholder="Key name (e.g., Production)"
-            value={keyName}
-            onChange={e => setKeyName(e.target.value)}
-            className="glass-input flex-1 px-3 py-2 text-sm"
-          />
-          <button
-            onClick={createApiKey}
-            disabled={creating || !keyName.trim()}
-            className="px-4 py-2 accent-gradient text-primary-foreground rounded-xl text-sm font-medium flex items-center gap-2 disabled:opacity-50"
-          >
-            {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-            Create
+          <input placeholder="Key name (e.g., Production)" value={keyName} onChange={e => setKeyName(e.target.value)} className="glass-input flex-1 px-3 py-2 text-sm" />
+          <button onClick={createApiKey} disabled={creating || !keyName.trim()} className="px-4 py-2 accent-gradient text-primary-foreground rounded-xl text-sm font-medium flex items-center gap-2 disabled:opacity-50">
+            {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Create
           </button>
         </div>
 
-        {/* Just created key */}
         {justCreatedKey && (
           <div className="mb-4 p-3 rounded-xl bg-primary/10 border border-primary/20">
             <p className="text-xs text-muted-foreground mb-1">⚠️ Copy this key now — it won't be shown again</p>
             <div className="flex items-center gap-2">
-              <code className="text-xs font-mono flex-1 truncate">
-                {showKey ? justCreatedKey : '•'.repeat(40)}
-              </code>
+              <code className="text-xs font-mono flex-1 truncate">{showKey ? justCreatedKey : '•'.repeat(40)}</code>
               <button onClick={() => setShowKey(!showKey)} className="text-muted-foreground hover:text-foreground">
                 {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -140,7 +153,6 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* Keys list */}
         {loading ? (
           <div className="space-y-2">{[...Array(3)].map((_, i) => <div key={i} className="skeleton h-12 rounded-lg" />)}</div>
         ) : apiKeys.length === 0 ? (
@@ -157,10 +169,7 @@ export default function SettingsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => toggleKeyActive(k)}
-                    className={`px-2 py-1 rounded text-xs ${k.is_active ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted-foreground'}`}
-                  >
+                  <button onClick={() => toggleKeyActive(k)} className={`px-2 py-1 rounded text-xs ${k.is_active ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted-foreground'}`}>
                     {k.is_active ? 'Active' : 'Inactive'}
                   </button>
                   <button onClick={() => deleteKey(k.id)} className="text-muted-foreground hover:text-destructive">
@@ -173,23 +182,39 @@ export default function SettingsPage() {
         )}
       </motion.div>
 
-      {/* API Documentation */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-card p-5">
-        <h2 className="text-sm font-medium mb-4">API Usage</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-medium">API Documentation</h2>
+          <button onClick={testApi} disabled={testing} className="px-3 py-1.5 text-xs accent-gradient text-primary-foreground rounded-lg flex items-center gap-1.5 disabled:opacity-50">
+            {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />} Test API
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">Base URL: <code className="font-mono bg-secondary px-1.5 py-0.5 rounded">{apiBaseUrl}</code></p>
         <div className="space-y-3">
           <div className="rounded-lg bg-secondary/50 p-3">
-            <p className="text-xs text-muted-foreground mb-1">Upload a file</p>
+            <p className="text-xs text-muted-foreground mb-1">📤 Upload a file</p>
             <code className="text-xs font-mono block whitespace-pre-wrap text-foreground">{`curl -X POST ${apiBaseUrl}/upload \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
-  -F "file=@image.png"`}</code>
+  -F "file=@image.png" -F "is_public=true"`}</code>
           </div>
           <div className="rounded-lg bg-secondary/50 p-3">
-            <p className="text-xs text-muted-foreground mb-1">List files</p>
+            <p className="text-xs text-muted-foreground mb-1">📋 List files</p>
             <code className="text-xs font-mono block text-foreground">{`curl ${apiBaseUrl}/files -H "Authorization: Bearer YOUR_API_KEY"`}</code>
           </div>
           <div className="rounded-lg bg-secondary/50 p-3">
-            <p className="text-xs text-muted-foreground mb-1">Delete a file</p>
+            <p className="text-xs text-muted-foreground mb-1">✏️ Update a file</p>
+            <code className="text-xs font-mono block whitespace-pre-wrap text-foreground">{`curl -X PUT ${apiBaseUrl}/files/FILE_ID \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"new-name.png","is_public":false,"tags":["photo"]}'`}</code>
+          </div>
+          <div className="rounded-lg bg-secondary/50 p-3">
+            <p className="text-xs text-muted-foreground mb-1">🗑️ Delete a file</p>
             <code className="text-xs font-mono block text-foreground">{`curl -X DELETE ${apiBaseUrl}/files/FILE_ID -H "Authorization: Bearer YOUR_API_KEY"`}</code>
+          </div>
+          <div className="rounded-lg bg-secondary/50 p-3">
+            <p className="text-xs text-muted-foreground mb-1">📊 Get stats</p>
+            <code className="text-xs font-mono block text-foreground">{`curl ${apiBaseUrl}/stats -H "Authorization: Bearer YOUR_API_KEY"`}</code>
           </div>
         </div>
       </motion.div>
