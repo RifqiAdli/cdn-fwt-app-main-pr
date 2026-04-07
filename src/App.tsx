@@ -16,6 +16,7 @@ const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const CdnPage = lazy(() => import("./pages/CdnPage"));
+const RawCdnRedirect = lazy(() => import("./pages/RawCdnRedirect"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const AdminFiles = lazy(() => import("./pages/AdminFiles"));
@@ -66,6 +67,7 @@ const App = () => (
               <Route path="/auth" element={<PublicRoute><AuthPage /></PublicRoute>} />
               <Route path="/s/:token" element={<PublicSharePage />} />
               <Route path="/cdn/:code" element={<CdnPage />} />
+              <Route path="/raw/:code" element={<RawCdnRedirect />} />
               <Route path="" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
                 <Route path="dashboard" element={<Dashboard />} />
                 <Route path="files" element={<FilesPage />} />
