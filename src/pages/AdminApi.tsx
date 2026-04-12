@@ -75,11 +75,22 @@ export default function AdminApi() {
   const findId = async (partial: string, table: 'api_keys' | 'files' | 'file_shares' | 'folders'): Promise<string | null> => {
     if (!partial) return null;
     if (partial.length >= 36) return partial; // full UUID
-    const { data } = await supabase.from(table).select('id').ilike('id', `${partial}%`).limit(5) as { data: { id: string }[] | null };
+    const { data } = await supabase.from(table).select('id').filter('id::text', 'ilike', `${partial}%`).limit(5) as { data: { id: string }[] | null };
     if (!data?.length) return partial; // pass through
     if (data.length === 1) return data[0].id;
     // Multiple matches
     addLine('error', `Ambiguous ID "${partial}" — matches: ${data.map(d => d.id.slice(0, 12) + '…').join(', ')}`);
+    return null;
+  };
+
+  // Resolve partial user_id via user_stats
+  const findUserId = async (partial: string): Promise<string | null> => {
+    if (!partial) return null;
+    if (partial.length >= 36) return partial;
+    const { data } = await supabase.from('user_stats').select('user_id').filter('user_id::text', 'ilike', `${partial}%`).limit(5) as { data: { user_id: string }[] | null };
+    if (!data?.length) return partial;
+    if (data.length === 1) return data[0].user_id;
+    addLine('error', `Ambiguous user ID "${partial}" — matches: ${data.map(d => d.user_id.slice(0, 12) + '…').join(', ')}`);
     return null;
   };
 
@@ -207,7 +218,7 @@ export default function AdminApi() {
 
       case 'list-keys': {
         let query = supabase.from('api_keys').select('*').order('created_at', { ascending: false });
-        if (args[0]) query = query.eq('user_id', args[0]);
+        if (args[0]) { const uid = await findUserId(args[0]); if (!uid) break; query = query.eq('user_id', uid); }
         const { data, error } = await query;
         if (error) { addLine('error', error.message); break; }
         if (!data?.length) { addLine('output', 'No keys found.'); break; }
@@ -287,8 +298,10 @@ export default function AdminApi() {
 
       case 'bulk-revoke': {
         if (!args[0]) { addLine('error', 'Usage: bulk-revoke <user_id>'); break; }
-        const { data, error } = await supabase.from('api_keys').update({ is_active: false }).eq('user_id', args[0]).select();
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Revoked ${data?.length || 0} key(s) for user ${args[0].slice(0, 8)}…`);
+        const uid = await findUserId(args[0]);
+        if (!uid) break;
+        const { data, error } = await supabase.from('api_keys').update({ is_active: false }).eq('user_id', uid).select();
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Revoked ${data?.length || 0} key(s) for user ${uid.slice(0, 8)}…`);
         break;
       }
 
@@ -302,7 +315,7 @@ export default function AdminApi() {
 
       case 'list-files': {
         let query = supabase.from('files').select('*').order('created_at', { ascending: false }).limit(20);
-        if (args[0]) query = query.eq('user_id', args[0]);
+        if (args[0]) { const uid = await findUserId(args[0]); if (!uid) break; query = query.eq('user_id', uid); }
         const { data, error } = await query;
         if (error) { addLine('error', error.message); break; }
         if (!data?.length) { addLine('output', 'No files found.'); break; }
@@ -429,7 +442,8 @@ export default function AdminApi() {
 
       case 'bulk-delete-files': {
         if (!args[0]) { addLine('error', 'Usage: bulk-delete-files <user_id>'); break; }
-        const uid = args[0];
+        const uid = await findUserId(args[0]);
+        if (!uid) break;
         const { data: files } = await supabase.from('files').select('id,storage_path').eq('user_id', uid);
         if (!files?.length) { addLine('output', 'No files found for this user.'); break; }
         // Remove from storage
@@ -445,7 +459,7 @@ export default function AdminApi() {
 
       case 'list-folders': {
         let query = supabase.from('folders').select('*').order('created_at', { ascending: false });
-        if (args[0]) query = query.eq('user_id', args[0]);
+        if (args[0]) { const uid = await findUserId(args[0]); if (!uid) break; query = query.eq('user_id', uid); }
         const { data, error } = await query;
         if (error) { addLine('error', error.message); break; }
         if (!data?.length) { addLine('output', 'No folders found.'); break; }
@@ -458,8 +472,10 @@ export default function AdminApi() {
 
       case 'create-folder': {
         if (args.length < 2) { addLine('error', 'Usage: create-folder <user_id> <folder_name>'); break; }
+        const cfuid = await findUserId(args[0]);
+        if (!cfuid) break;
         const name = args.slice(1).join(' ');
-        const { data, error } = await supabase.from('folders').insert({ user_id: args[0], name }).select().single();
+        const { data, error } = await supabase.from('folders').insert({ user_id: cfuid, name }).select().single();
         addLine(error ? 'error' : 'output', error ? error.message : `✓ Folder "${name}" created (${data.id.slice(0, 8)}…).`);
         break;
       }
@@ -500,29 +516,35 @@ export default function AdminApi() {
 
       case 'user-info': {
         if (!args[0]) { addLine('error', 'Usage: user-info <user_id>'); break; }
+        const uid0 = await findUserId(args[0]);
+        if (!uid0) break;
         const [statsRes, keysRes, filesRes, rolesRes] = await Promise.all([
-          supabase.from('user_stats').select('*').eq('user_id', args[0]).maybeSingle(),
-          supabase.from('api_keys').select('id').eq('user_id', args[0]),
-          supabase.from('files').select('id').eq('user_id', args[0]),
-          supabase.from('user_roles').select('role').eq('user_id', args[0]),
+          supabase.from('user_stats').select('*').eq('user_id', uid0).maybeSingle(),
+          supabase.from('api_keys').select('id').eq('user_id', uid0),
+          supabase.from('files').select('id').eq('user_id', uid0),
+          supabase.from('user_roles').select('role').eq('user_id', uid0),
         ]);
         const s = statsRes.data;
         const roles = (rolesRes.data || []).map(r => r.role).join(', ') || 'user';
-        addLine('output', `User ID:   ${args[0]}\nRoles:     ${roles}\nFiles:     ${filesRes.data?.length || 0}\nAPI Keys:  ${keysRes.data?.length || 0}\nStorage:   ${formatBytes(Number(s?.total_storage || 0))} / ${formatBytes(Number(s?.storage_limit || 0))}\nBandwidth: ${formatBytes(Number(s?.total_bandwidth || 0))}\nDownloads: ${s?.total_downloads || 0}`);
+        addLine('output', `User ID:   ${uid0}\nRoles:     ${roles}\nFiles:     ${filesRes.data?.length || 0}\nAPI Keys:  ${keysRes.data?.length || 0}\nStorage:   ${formatBytes(Number(s?.total_storage || 0))} / ${formatBytes(Number(s?.storage_limit || 0))}\nBandwidth: ${formatBytes(Number(s?.total_bandwidth || 0))}\nDownloads: ${s?.total_downloads || 0}`);
         break;
       }
 
       case 'promote': {
         if (!args[0]) { addLine('error', 'Usage: promote <user_id>'); break; }
-        const { error } = await supabase.from('user_roles').insert({ user_id: args[0], role: 'admin' });
-        addLine(error ? 'error' : 'output', error ? (error.message.includes('duplicate') ? 'User is already an admin.' : error.message) : `✓ User ${args[0].slice(0, 8)}… promoted to admin.`);
+        const puid = await findUserId(args[0]);
+        if (!puid) break;
+        const { error } = await supabase.from('user_roles').insert({ user_id: puid, role: 'admin' });
+        addLine(error ? 'error' : 'output', error ? (error.message.includes('duplicate') ? 'User is already an admin.' : error.message) : `✓ User ${puid.slice(0, 8)}… promoted to admin.`);
         break;
       }
 
       case 'demote': {
         if (!args[0]) { addLine('error', 'Usage: demote <user_id>'); break; }
-        const { error } = await supabase.from('user_roles').delete().eq('user_id', args[0]).eq('role', 'admin');
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Admin role removed from ${args[0].slice(0, 8)}…`);
+        const duid = await findUserId(args[0]);
+        if (!duid) break;
+        const { error } = await supabase.from('user_roles').delete().eq('user_id', duid).eq('role', 'admin');
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Admin role removed from ${duid.slice(0, 8)}…`);
         break;
       }
 
@@ -530,8 +552,10 @@ export default function AdminApi() {
         if (args.length < 2) { addLine('error', 'Usage: set-storage-limit <user_id> <bytes>\nExamples: 5368709120 (5GB), 10737418240 (10GB)'); break; }
         const bytes = parseInt(args[1]);
         if (isNaN(bytes)) { addLine('error', 'Invalid byte value.'); break; }
-        const { error } = await supabase.from('user_stats').update({ storage_limit: bytes }).eq('user_id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Storage limit for ${args[0].slice(0, 8)}… set to ${formatBytes(bytes)}.`);
+        const sluid = await findUserId(args[0]);
+        if (!sluid) break;
+        const { error } = await supabase.from('user_stats').update({ storage_limit: bytes }).eq('user_id', sluid);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Storage limit for ${sluid.slice(0, 8)}… set to ${formatBytes(bytes)}.`);
         break;
       }
 
@@ -550,7 +574,7 @@ export default function AdminApi() {
 
       case 'list-shares': {
         let query = supabase.from('file_shares').select('*, files(original_name)').order('created_at', { ascending: false }).limit(20);
-        if (args[0]) query = query.eq('user_id', args[0]);
+        if (args[0]) { const uid = await findUserId(args[0]); if (!uid) break; query = query.eq('user_id', uid); }
         const { data, error } = await query;
         if (error) { addLine('error', error.message); break; }
         if (!data?.length) { addLine('output', 'No shares found.'); break; }
