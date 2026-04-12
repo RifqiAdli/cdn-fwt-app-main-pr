@@ -82,26 +82,37 @@ export default function AdminApi() {
     setLines(prev => [...prev, ...texts.map(text => ({ type, text }))]);
   }, []);
 
-  // Resolve partial ID against a table
+  // Resolve partial ID — fetch all IDs then filter client-side (most reliable approach)
   const findId = async (partial: string, table: 'api_keys' | 'files' | 'file_shares' | 'folders'): Promise<string | null> => {
     if (!partial) return null;
-    if (partial.length >= 36) return partial; // full UUID
-    const { data } = await supabase.from(table).select('id').filter('id::text', 'ilike', `${partial}%`).limit(5) as { data: { id: string }[] | null };
-    if (!data?.length) return partial; // pass through
-    if (data.length === 1) return data[0].id;
-    // Multiple matches
-    addLine('error', `Ambiguous ID "${partial}" — matches: ${data.map(d => d.id.slice(0, 12) + '…').join(', ')}`);
+    const trimmed = partial.trim().toLowerCase();
+    if (trimmed.length >= 36) return trimmed; // already full UUID
+    const { data, error } = await supabase.from(table).select('id').limit(500);
+    if (error || !data?.length) return trimmed;
+    const matches = data.filter(row => row.id.toLowerCase().startsWith(trimmed));
+    if (matches.length === 1) return matches[0].id;
+    if (matches.length > 1) {
+      addLine('error', `Ambiguous ID "${trimmed}" — ${matches.length} matches: ${matches.slice(0, 3).map(d => d.id.slice(0, 12) + '…').join(', ')}${matches.length > 3 ? ' …' : ''}`);
+      return null;
+    }
+    addLine('error', `No record found with ID starting with "${trimmed}" in ${table}.`);
     return null;
   };
 
-  // Resolve partial user_id via user_stats
+  // Resolve partial user_id — fetch all then filter client-side
   const findUserId = async (partial: string): Promise<string | null> => {
     if (!partial) return null;
-    if (partial.length >= 36) return partial;
-    const { data } = await supabase.from('user_stats').select('user_id').filter('user_id::text', 'ilike', `${partial}%`).limit(5) as { data: { user_id: string }[] | null };
-    if (!data?.length) return partial;
-    if (data.length === 1) return data[0].user_id;
-    addLine('error', `Ambiguous user ID "${partial}" — matches: ${data.map(d => d.user_id.slice(0, 12) + '…').join(', ')}`);
+    const trimmed = partial.trim().toLowerCase();
+    if (trimmed.length >= 36) return trimmed;
+    const { data, error } = await supabase.from('user_stats').select('user_id').limit(500);
+    if (error || !data?.length) return trimmed;
+    const matches = data.filter(row => row.user_id.toLowerCase().startsWith(trimmed));
+    if (matches.length === 1) return matches[0].user_id;
+    if (matches.length > 1) {
+      addLine('error', `Ambiguous user ID "${trimmed}" — ${matches.length} matches: ${matches.slice(0, 3).map(d => d.user_id.slice(0, 12) + '…').join(', ')}${matches.length > 3 ? ' …' : ''}`);
+      return null;
+    }
+    addLine('error', `No user found with ID starting with "${trimmed}".`);
     return null;
   };
 
