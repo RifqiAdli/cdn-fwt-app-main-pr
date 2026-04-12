@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { motion } from 'framer-motion';
 import { format } from 'date-fns';
 import { formatBytes } from '@/lib/utils';
-import { Key, Loader2, Terminal, Sparkles } from 'lucide-react';
+import { Key, Loader2, Terminal, Sparkles, Maximize2, X } from 'lucide-react';
 
 interface TermLine {
   type: 'input' | 'output' | 'error' | 'ai';
@@ -43,6 +43,9 @@ export default function AdminApi() {
   const [executing, setExecuting] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const modalTermRef = useRef<HTMLDivElement>(null);
+  const modalInputRef = useRef<HTMLInputElement>(null);
+  const [termModal, setTermModal] = useState(false);
 
   const load = async () => {
     const { data } = await supabase.from('api_keys').select('*').order('created_at', { ascending: false });
@@ -61,7 +64,15 @@ export default function AdminApi() {
 
   useEffect(() => {
     termRef.current?.scrollTo(0, termRef.current.scrollHeight);
+    modalTermRef.current?.scrollTo(0, modalTermRef.current.scrollHeight);
   }, [lines]);
+
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    document.body.style.overflow = termModal ? 'hidden' : '';
+    if (termModal) setTimeout(() => modalInputRef.current?.focus(), 100);
+    return () => { document.body.style.overflow = ''; };
+  }, [termModal]);
 
   const addLine = useCallback((type: TermLine['type'], text: string) => {
     setLines(prev => [...prev, { type, text }]);
@@ -852,7 +863,10 @@ export default function AdminApi() {
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="glass-card p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium flex items-center gap-2"><Terminal className="w-4 h-4" /> Admin Terminal</h2>
-          <span className="text-xs text-muted-foreground flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI-Powered • v3.0</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground hidden sm:flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI-Powered • v3.0</span>
+            <button onClick={() => setTermModal(true)} className="md:hidden flex items-center gap-1 text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"><Maximize2 className="w-3 h-3" /> Fullscreen</button>
+          </div>
         </div>
         <div
           ref={termRef}
@@ -885,6 +899,77 @@ export default function AdminApi() {
           </form>
         </div>
       </motion.div>
+
+      {/* Mobile Fullscreen Terminal Modal */}
+      {termModal && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background md:hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+          {/* Modal Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-background shrink-0">
+            <span className="text-sm font-medium flex items-center gap-2">
+              <Terminal className="w-4 h-4" /> Admin Terminal
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI-Powered</span>
+              <button onClick={() => setTermModal(false)} className="p-1.5 rounded-md hover:bg-secondary transition-colors"><X className="w-4 h-4" /></button>
+            </div>
+          </div>
+
+          {/* Modal Terminal Body */}
+          <div
+            ref={modalTermRef}
+            onClick={() => modalInputRef.current?.focus()}
+            className="flex-1 overflow-y-auto bg-black p-4 font-mono text-xs leading-relaxed cursor-text"
+          >
+            {lines.map((line, i) => (
+              <div key={i} className={`whitespace-pre-wrap ${
+                line.type === 'input' ? 'text-primary' :
+                line.type === 'error' ? 'text-destructive' :
+                line.type === 'ai' ? 'text-purple-400' :
+                'text-foreground/80'
+              }`}>
+                {line.text}
+              </div>
+            ))}
+            <form onSubmit={handleSubmit} className="flex items-center gap-2 mt-1">
+              <span className="text-primary shrink-0">admin@fooptra $</span>
+              <input
+                ref={modalInputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={executing}
+                className="flex-1 bg-transparent outline-none text-foreground caret-primary disabled:opacity-50"
+                spellCheck={false}
+                enterKeyHint="send"
+              />
+              {executing && <Loader2 className="w-3 h-3 animate-spin text-primary" />}
+            </form>
+          </div>
+
+          {/* Mobile quick-send bar */}
+          <div className="shrink-0 border-t border-border bg-background px-3 py-2 flex items-center gap-2">
+            <span className="text-primary font-mono text-xs shrink-0">$</span>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="type command…"
+              disabled={executing}
+              className="flex-1 bg-secondary/50 rounded-lg px-3 py-2 text-sm outline-none text-foreground placeholder:text-muted-foreground disabled:opacity-50"
+              spellCheck={false}
+              enterKeyHint="send"
+              onKeyUp={e => { if (e.key === 'Enter') handleSubmit(e as any); }}
+            />
+            <button
+              onClick={e => handleSubmit(e as any)}
+              disabled={executing || !input.trim()}
+              className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-40 transition-opacity"
+            >
+              {executing ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Run'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
