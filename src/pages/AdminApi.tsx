@@ -10,16 +10,31 @@ interface TermLine {
   text: string;
 }
 
+// Helper: resolve partial ID to full ID from a list
+const resolveId = (partial: string, ids: string[]): string | null => {
+  if (!partial) return null;
+  const lower = partial.toLowerCase();
+  // Exact match first
+  const exact = ids.find(id => id === lower);
+  if (exact) return exact;
+  // Prefix match
+  const matches = ids.filter(id => id.toLowerCase().startsWith(lower));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return null; // ambiguous
+  return partial; // pass through as-is
+};
+
 export default function AdminApi() {
   const [keys, setKeys] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState<TermLine[]>([
-    { type: 'output', text: '╔══════════════════════════════════════════╗' },
-    { type: 'output', text: '║   FOOPTRA Admin Terminal v2.0            ║' },
-    { type: 'output', text: '║   AI-Powered Platform Management         ║' },
-    { type: 'output', text: '╚══════════════════════════════════════════╝' },
+    { type: 'output', text: '╔══════════════════════════════════════════════╗' },
+    { type: 'output', text: '║   FOOPTRA Admin Terminal v3.0                ║' },
+    { type: 'output', text: '║   AI-Powered • Full CRUD • Partial ID Match  ║' },
+    { type: 'output', text: '╚══════════════════════════════════════════════╝' },
     { type: 'output', text: '' },
     { type: 'output', text: 'Type "help" for commands or "ai <question>" for AI assistant.' },
+    { type: 'output', text: 'Tip: You can use partial IDs (first 8+ chars) for any command.' },
     { type: 'output', text: '' },
   ]);
   const [input, setInput] = useState('');
@@ -56,6 +71,18 @@ export default function AdminApi() {
     setLines(prev => [...prev, ...texts.map(text => ({ type, text }))]);
   }, []);
 
+  // Resolve partial ID against a table
+  const findId = async (partial: string, table: 'api_keys' | 'files' | 'file_shares' | 'folders'): Promise<string | null> => {
+    if (!partial) return null;
+    if (partial.length >= 36) return partial; // full UUID
+    const { data } = await supabase.from(table).select('id').ilike('id', `${partial}%`).limit(5) as { data: { id: string }[] | null };
+    if (!data?.length) return partial; // pass through
+    if (data.length === 1) return data[0].id;
+    // Multiple matches
+    addLine('error', `Ambiguous ID "${partial}" — matches: ${data.map(d => d.id.slice(0, 12) + '…').join(', ')}`);
+    return null;
+  };
+
   const executeCommand = useCallback(async (cmd: string) => {
     const parts = cmd.trim().split(/\s+/);
     const command = parts[0]?.toLowerCase();
@@ -64,44 +91,67 @@ export default function AdminApi() {
     switch (command) {
       case 'help':
         addLines('output', [
-          '┌─── API Key Management ───────────────────────┐',
-          '│ list-keys [user_id]     List API keys         │',
-          '│ key-info <key_id>       Show key details       │',
-          '│ revoke <key_id>         Deactivate a key       │',
-          '│ activate <key_id>       Activate a key         │',
-          '│ delete-key <key_id>     Delete permanently     │',
-          '│ set-scopes <id> <s>     Set scopes (csv)       │',
-          '│ bulk-revoke <user_id>   Revoke all user keys   │',
-          '│ export-keys             Export keys as JSON     │',
-          '├─── File Management ───────────────────────────┤',
-          '│ list-files [user_id]    List files              │',
-          '│ file-info <file_id>     Show file details       │',
-          '│ delete-file <file_id>   Delete a file           │',
-          '│ toggle-public <file_id> Toggle visibility       │',
-          '│ search-files <query>    Search by name          │',
-          '│ top-files [n]           Most viewed files       │',
-          '│ export-files            Export files as JSON     │',
-          '├─── User Management ───────────────────────────┤',
-          '│ list-users              List all users          │',
-          '│ user-info <user_id>     Show user details       │',
-          '│ promote <user_id>       Grant admin role        │',
-          '│ demote <user_id>        Remove admin role       │',
-          '├─── Share Management ──────────────────────────┤',
-          '│ list-shares [user_id]   List share links        │',
-          '│ revoke-share <share_id> Deactivate share        │',
-          '│ cleanup-expired         Show expired items      │',
-          '├─── Analytics & Reports ───────────────────────┤',
-          '│ platform-stats          Full platform stats     │',
-          '│ storage-report          Storage breakdown       │',
-          '│ bandwidth-report        Bandwidth breakdown     │',
-          '│ recent-activity [n]     Recent access logs      │',
-          '├─── AI Assistant ──────────────────────────────┤',
-          '│ ai <question>           Ask AI for help         │',
-          '├─── System ────────────────────────────────────┤',
-          '│ clear                   Clear terminal          │',
-          '│ whoami                  Current admin info      │',
-          '│ uptime                  Platform uptime info    │',
-          '└───────────────────────────────────────────────┘',
+          '┌─── API Key Management ────────────────────────────┐',
+          '│ list-keys [user_id]        List API keys           │',
+          '│ key-info <key_id>          Show key details         │',
+          '│ revoke <key_id>            Deactivate a key         │',
+          '│ activate <key_id>          Activate a key           │',
+          '│ delete-key <key_id>        Delete permanently       │',
+          '│ set-scopes <id> <s>        Set scopes (csv)         │',
+          '│ rename-key <id> <name>     Rename a key             │',
+          '│ set-key-expiry <id> <date> Set key expiration       │',
+          '│ bulk-revoke <user_id>      Revoke all user keys     │',
+          '│ export-keys                Export keys as JSON       │',
+          '├─── File Management ────────────────────────────────┤',
+          '│ list-files [user_id]       List files               │',
+          '│ file-info <file_id>        Show file details         │',
+          '│ delete-file <file_id>      Delete a file             │',
+          '│ toggle-public <file_id>    Toggle visibility         │',
+          '│ rename-file <id> <name>    Rename a file             │',
+          '│ set-tags <id> <t1,t2>      Set file tags             │',
+          '│ set-expiry <id> <date>     Set file expiration       │',
+          '│ remove-expiry <id>         Remove file expiration    │',
+          '│ move-file <id> <folder_id> Move file to folder       │',
+          '│ search-files <query>       Search by name            │',
+          '│ top-files [n]              Most viewed files         │',
+          '│ export-files               Export files as JSON       │',
+          '│ bulk-delete-files <uid>    Delete all user files     │',
+          '├─── Folder Management ──────────────────────────────┤',
+          '│ list-folders [user_id]     List folders              │',
+          '│ create-folder <uid> <name> Create a folder           │',
+          '│ rename-folder <id> <name>  Rename a folder           │',
+          '│ delete-folder <id>         Delete a folder           │',
+          '├─── Share Management ───────────────────────────────┤',
+          '│ list-shares [user_id]      List share links          │',
+          '│ create-share <fid> [max]   Create share link         │',
+          '│ revoke-share <share_id>    Deactivate share          │',
+          '│ activate-share <share_id>  Reactivate share          │',
+          '│ delete-share <share_id>    Delete share permanently  │',
+          '│ set-share-limit <id> <n>   Set download limit        │',
+          '│ set-share-expiry <id> <d>  Set share expiration      │',
+          '│ cleanup-expired            Show expired items        │',
+          '│ purge-expired              Delete expired items      │',
+          '├─── User Management ────────────────────────────────┤',
+          '│ list-users                 List all users            │',
+          '│ user-info <user_id>        Show user details         │',
+          '│ promote <user_id>          Grant admin role          │',
+          '│ demote <user_id>           Remove admin role         │',
+          '│ set-storage-limit <uid> <b> Set storage limit        │',
+          '│ list-roles                 List all role assignments  │',
+          '├─── Analytics & Reports ────────────────────────────┤',
+          '│ platform-stats             Full platform stats       │',
+          '│ storage-report             Storage breakdown         │',
+          '│ bandwidth-report           Bandwidth breakdown       │',
+          '│ recent-activity [n]        Recent access logs        │',
+          '├─── System ─────────────────────────────────────────┤',
+          '│ sql <table> [limit]        Quick table peek          │',
+          '│ ai <question>              Ask AI for help           │',
+          '│ clear                      Clear terminal            │',
+          '│ whoami                     Current admin info        │',
+          '│ uptime                     Platform uptime info      │',
+          '└────────────────────────────────────────────────────┘',
+          '',
+          'Tip: Use partial IDs (first 8+ chars). E.g: file-info a1b2c3d4',
         ]);
         break;
 
@@ -122,7 +172,7 @@ export default function AdminApi() {
         break;
       }
 
-      // ── API Key commands ──────────────────────────
+      // ── Platform Stats ────────────────────────────
 
       case 'stats':
       case 'platform-stats': {
@@ -153,6 +203,8 @@ export default function AdminApi() {
         break;
       }
 
+      // ── API Key commands ──────────────────────────
+
       case 'list-keys': {
         let query = supabase.from('api_keys').select('*').order('created_at', { ascending: false });
         if (args[0]) query = query.eq('user_id', args[0]);
@@ -168,36 +220,66 @@ export default function AdminApi() {
 
       case 'revoke': {
         if (!args[0]) { addLine('error', 'Usage: revoke <key_id>'); break; }
-        const { error } = await supabase.from('api_keys').update({ is_active: false }).eq('id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${args[0].slice(0, 8)}… revoked.`);
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const { error } = await supabase.from('api_keys').update({ is_active: false }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${id.slice(0, 8)}… revoked.`);
         break;
       }
 
       case 'activate': {
         if (!args[0]) { addLine('error', 'Usage: activate <key_id>'); break; }
-        const { error } = await supabase.from('api_keys').update({ is_active: true }).eq('id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${args[0].slice(0, 8)}… activated.`);
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const { error } = await supabase.from('api_keys').update({ is_active: true }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${id.slice(0, 8)}… activated.`);
         break;
       }
 
       case 'delete-key': {
         if (!args[0]) { addLine('error', 'Usage: delete-key <key_id>'); break; }
-        const { error } = await supabase.from('api_keys').delete().eq('id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${args[0].slice(0, 8)}… deleted.`);
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const { error } = await supabase.from('api_keys').delete().eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key ${id.slice(0, 8)}… deleted.`);
         break;
       }
 
       case 'set-scopes': {
         if (args.length < 2) { addLine('error', 'Usage: set-scopes <key_id> read,upload,delete'); break; }
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
         const scopes = args[1].split(',').map(s => s.trim());
-        const { error } = await supabase.from('api_keys').update({ scopes }).eq('id', args[0]);
+        const { error } = await supabase.from('api_keys').update({ scopes }).eq('id', id);
         addLine(error ? 'error' : 'output', error ? error.message : `✓ Scopes → [${scopes.join(', ')}]`);
+        break;
+      }
+
+      case 'rename-key': {
+        if (args.length < 2) { addLine('error', 'Usage: rename-key <key_id> <new_name>'); break; }
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const name = args.slice(1).join(' ');
+        const { error } = await supabase.from('api_keys').update({ name }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key renamed to "${name}".`);
+        break;
+      }
+
+      case 'set-key-expiry': {
+        if (args.length < 2) { addLine('error', 'Usage: set-key-expiry <key_id> <YYYY-MM-DD>'); break; }
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const expires_at = new Date(args[1]).toISOString();
+        const { error } = await supabase.from('api_keys').update({ expires_at }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Key expiry set to ${args[1]}.`);
         break;
       }
 
       case 'key-info': {
         if (!args[0]) { addLine('error', 'Usage: key-info <key_id>'); break; }
-        const { data, error } = await supabase.from('api_keys').select('*').eq('id', args[0]).maybeSingle();
+        const id = await findId(args[0], 'api_keys');
+        if (!id) break;
+        const { data, error } = await supabase.from('api_keys').select('*').eq('id', id).maybeSingle();
         if (error || !data) { addLine('error', error?.message || 'Key not found.'); break; }
         addLine('output', `Name:     ${data.name}\nID:       ${data.id}\nPrefix:   ${data.key_prefix}\nActive:   ${data.is_active ? '🟢 Yes' : '🔴 No'}\nScopes:   ${(data.scopes || []).join(', ')}\nUser:     ${data.user_id}\nCreated:  ${format(new Date(data.created_at), 'yyyy-MM-dd HH:mm')}\nLast use: ${data.last_used_at ? format(new Date(data.last_used_at), 'yyyy-MM-dd HH:mm') : 'Never'}${data.expires_at ? `\nExpires:  ${format(new Date(data.expires_at), 'yyyy-MM-dd HH:mm')}` : ''}`);
         break;
@@ -233,29 +315,84 @@ export default function AdminApi() {
 
       case 'file-info': {
         if (!args[0]) { addLine('error', 'Usage: file-info <file_id>'); break; }
-        const { data, error } = await supabase.from('files').select('*').eq('id', args[0]).maybeSingle();
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const { data, error } = await supabase.from('files').select('*').eq('id', id).maybeSingle();
         if (error || !data) { addLine('error', error?.message || 'File not found.'); break; }
-        addLine('output', `Name:      ${data.original_name}\nID:        ${data.id}\nSize:      ${formatBytes(data.size)}\nMIME:      ${data.mime_type}\nPublic:    ${data.is_public ? '🌐 Yes' : '🔒 No'}\nShort:     ${data.short_code || 'N/A'}\nViews:     ${data.view_count}\nDownloads: ${data.download_count}\nBandwidth: ${formatBytes(data.bandwidth_used)}\nTags:      ${(data.tags || []).join(', ') || 'None'}\nUser:      ${data.user_id}\nCreated:   ${format(new Date(data.created_at), 'yyyy-MM-dd HH:mm')}${data.expires_at ? `\nExpires:   ${format(new Date(data.expires_at), 'yyyy-MM-dd HH:mm')}` : ''}`);
+        addLine('output', `Name:      ${data.original_name}\nID:        ${data.id}\nSize:      ${formatBytes(data.size)}\nMIME:      ${data.mime_type}\nPublic:    ${data.is_public ? '🌐 Yes' : '🔒 No'}\nShort:     ${data.short_code || 'N/A'}\nFolder:    ${data.folder_id || 'None'}\nViews:     ${data.view_count}\nDownloads: ${data.download_count}\nBandwidth: ${formatBytes(data.bandwidth_used)}\nTags:      ${(data.tags || []).join(', ') || 'None'}\nUser:      ${data.user_id}\nCreated:   ${format(new Date(data.created_at), 'yyyy-MM-dd HH:mm')}${data.expires_at ? `\nExpires:   ${format(new Date(data.expires_at), 'yyyy-MM-dd HH:mm')}` : ''}`);
         break;
       }
 
       case 'delete-file': {
         if (!args[0]) { addLine('error', 'Usage: delete-file <file_id>'); break; }
-        const { data: file } = await supabase.from('files').select('storage_path').eq('id', args[0]).maybeSingle();
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const { data: file } = await supabase.from('files').select('storage_path').eq('id', id).maybeSingle();
         if (file?.storage_path) {
           await supabase.storage.from('cdn-files').remove([file.storage_path]);
         }
-        const { error } = await supabase.from('files').delete().eq('id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ File ${args[0].slice(0, 8)}… deleted.`);
+        const { error } = await supabase.from('files').delete().eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ File ${id.slice(0, 8)}… deleted.`);
         break;
       }
 
       case 'toggle-public': {
         if (!args[0]) { addLine('error', 'Usage: toggle-public <file_id>'); break; }
-        const { data: cur } = await supabase.from('files').select('is_public').eq('id', args[0]).maybeSingle();
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const { data: cur } = await supabase.from('files').select('is_public').eq('id', id).maybeSingle();
         if (!cur) { addLine('error', 'File not found.'); break; }
-        const { error } = await supabase.from('files').update({ is_public: !cur.is_public }).eq('id', args[0]);
+        const { error } = await supabase.from('files').update({ is_public: !cur.is_public }).eq('id', id);
         addLine(error ? 'error' : 'output', error ? error.message : `✓ File → ${!cur.is_public ? '🌐 Public' : '🔒 Private'}`);
+        break;
+      }
+
+      case 'rename-file': {
+        if (args.length < 2) { addLine('error', 'Usage: rename-file <file_id> <new_name>'); break; }
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const newName = args.slice(1).join(' ');
+        const { error } = await supabase.from('files').update({ original_name: newName, name: newName }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ File renamed to "${newName}".`);
+        break;
+      }
+
+      case 'set-tags': {
+        if (args.length < 2) { addLine('error', 'Usage: set-tags <file_id> <tag1,tag2,tag3>'); break; }
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const tags = args[1].split(',').map(t => t.trim()).filter(Boolean);
+        const { error } = await supabase.from('files').update({ tags }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Tags → [${tags.join(', ')}]`);
+        break;
+      }
+
+      case 'set-expiry': {
+        if (args.length < 2) { addLine('error', 'Usage: set-expiry <file_id> <YYYY-MM-DD>'); break; }
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const expires_at = new Date(args[1]).toISOString();
+        const { error } = await supabase.from('files').update({ expires_at }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ File expiry set to ${args[1]}.`);
+        break;
+      }
+
+      case 'remove-expiry': {
+        if (!args[0]) { addLine('error', 'Usage: remove-expiry <file_id>'); break; }
+        const id = await findId(args[0], 'files');
+        if (!id) break;
+        const { error } = await supabase.from('files').update({ expires_at: null }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ File expiry removed.`);
+        break;
+      }
+
+      case 'move-file': {
+        if (args.length < 2) { addLine('error', 'Usage: move-file <file_id> <folder_id>'); break; }
+        const fileId = await findId(args[0], 'files');
+        if (!fileId) break;
+        const folderId = args[1] === 'null' || args[1] === 'none' ? null : await findId(args[1], 'folders');
+        const { error } = await supabase.from('files').update({ folder_id: folderId }).eq('id', fileId);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ File moved to ${folderId ? folderId.slice(0, 8) + '…' : 'root'}.`);
         break;
       }
 
@@ -287,6 +424,64 @@ export default function AdminApi() {
       case 'export-files': {
         const { data } = await supabase.from('files').select('id,original_name,size,mime_type,is_public,view_count,download_count,user_id,created_at');
         addLine('output', JSON.stringify(data || [], null, 2));
+        break;
+      }
+
+      case 'bulk-delete-files': {
+        if (!args[0]) { addLine('error', 'Usage: bulk-delete-files <user_id>'); break; }
+        const uid = args[0];
+        const { data: files } = await supabase.from('files').select('id,storage_path').eq('user_id', uid);
+        if (!files?.length) { addLine('output', 'No files found for this user.'); break; }
+        // Remove from storage
+        const paths = files.map(f => f.storage_path).filter(Boolean);
+        if (paths.length) await supabase.storage.from('cdn-files').remove(paths);
+        // Delete records
+        const { error } = await supabase.from('files').delete().eq('user_id', uid);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Deleted ${files.length} file(s) for user ${uid.slice(0, 8)}…`);
+        break;
+      }
+
+      // ── Folder commands ───────────────────────────
+
+      case 'list-folders': {
+        let query = supabase.from('folders').select('*').order('created_at', { ascending: false });
+        if (args[0]) query = query.eq('user_id', args[0]);
+        const { data, error } = await query;
+        if (error) { addLine('error', error.message); break; }
+        if (!data?.length) { addLine('output', 'No folders found.'); break; }
+        addLine('output', `Found ${data.length} folder(s):`);
+        data.forEach(f => {
+          addLine('output', `  📁 ${f.id.slice(0, 8)}… │ ${f.name} │ color: ${f.color || 'default'} │ parent: ${f.parent_id?.slice(0, 8) || 'root'} │ user: ${f.user_id.slice(0, 8)}…`);
+        });
+        break;
+      }
+
+      case 'create-folder': {
+        if (args.length < 2) { addLine('error', 'Usage: create-folder <user_id> <folder_name>'); break; }
+        const name = args.slice(1).join(' ');
+        const { data, error } = await supabase.from('folders').insert({ user_id: args[0], name }).select().single();
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Folder "${name}" created (${data.id.slice(0, 8)}…).`);
+        break;
+      }
+
+      case 'rename-folder': {
+        if (args.length < 2) { addLine('error', 'Usage: rename-folder <folder_id> <new_name>'); break; }
+        const id = await findId(args[0], 'folders');
+        if (!id) break;
+        const name = args.slice(1).join(' ');
+        const { error } = await supabase.from('folders').update({ name }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Folder renamed to "${name}".`);
+        break;
+      }
+
+      case 'delete-folder': {
+        if (!args[0]) { addLine('error', 'Usage: delete-folder <folder_id>'); break; }
+        const id = await findId(args[0], 'folders');
+        if (!id) break;
+        // Unlink files from this folder first
+        await supabase.from('files').update({ folder_id: null }).eq('folder_id', id);
+        const { error } = await supabase.from('folders').delete().eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Folder ${id.slice(0, 8)}… deleted. Files moved to root.`);
         break;
       }
 
@@ -331,6 +526,26 @@ export default function AdminApi() {
         break;
       }
 
+      case 'set-storage-limit': {
+        if (args.length < 2) { addLine('error', 'Usage: set-storage-limit <user_id> <bytes>\nExamples: 5368709120 (5GB), 10737418240 (10GB)'); break; }
+        const bytes = parseInt(args[1]);
+        if (isNaN(bytes)) { addLine('error', 'Invalid byte value.'); break; }
+        const { error } = await supabase.from('user_stats').update({ storage_limit: bytes }).eq('user_id', args[0]);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Storage limit for ${args[0].slice(0, 8)}… set to ${formatBytes(bytes)}.`);
+        break;
+      }
+
+      case 'list-roles': {
+        const { data, error } = await supabase.from('user_roles').select('*').order('created_at', { ascending: false });
+        if (error) { addLine('error', error.message); break; }
+        if (!data?.length) { addLine('output', 'No role assignments.'); break; }
+        addLine('output', `Found ${data.length} role(s):`);
+        data.forEach(r => {
+          addLine('output', `  ${r.user_id.slice(0, 8)}… │ ${r.role} │ assigned: ${format(new Date(r.created_at), 'yyyy-MM-dd HH:mm')}`);
+        });
+        break;
+      }
+
       // ── Share commands ────────────────────────────
 
       case 'list-shares': {
@@ -348,10 +563,68 @@ export default function AdminApi() {
         break;
       }
 
+      case 'create-share': {
+        if (!args[0]) { addLine('error', 'Usage: create-share <file_id> [max_downloads]'); break; }
+        const fileId = await findId(args[0], 'files');
+        if (!fileId) break;
+        const { data: file } = await supabase.from('files').select('user_id,original_name').eq('id', fileId).maybeSingle();
+        if (!file) { addLine('error', 'File not found.'); break; }
+        const maxDl = args[1] ? parseInt(args[1]) : null;
+        const { data, error } = await supabase.from('file_shares').insert({
+          file_id: fileId,
+          user_id: file.user_id,
+          max_downloads: maxDl,
+        }).select().single();
+        if (error) { addLine('error', error.message); break; }
+        addLine('output', `✓ Share created for "${file.original_name}"\n  ID: ${data.id}\n  Token: ${data.share_token}\n  URL: ${window.location.origin}/share/${data.share_token}${maxDl ? `\n  Max downloads: ${maxDl}` : ''}`);
+        break;
+      }
+
       case 'revoke-share': {
         if (!args[0]) { addLine('error', 'Usage: revoke-share <share_id>'); break; }
-        const { error } = await supabase.from('file_shares').update({ is_active: false }).eq('id', args[0]);
-        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share ${args[0].slice(0, 8)}… deactivated.`);
+        const id = await findId(args[0], 'file_shares');
+        if (!id) break;
+        const { error } = await supabase.from('file_shares').update({ is_active: false }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share ${id.slice(0, 8)}… deactivated.`);
+        break;
+      }
+
+      case 'activate-share': {
+        if (!args[0]) { addLine('error', 'Usage: activate-share <share_id>'); break; }
+        const id = await findId(args[0], 'file_shares');
+        if (!id) break;
+        const { error } = await supabase.from('file_shares').update({ is_active: true }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share ${id.slice(0, 8)}… reactivated.`);
+        break;
+      }
+
+      case 'delete-share': {
+        if (!args[0]) { addLine('error', 'Usage: delete-share <share_id>'); break; }
+        const id = await findId(args[0], 'file_shares');
+        if (!id) break;
+        const { error } = await supabase.from('file_shares').delete().eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share ${id.slice(0, 8)}… deleted permanently.`);
+        break;
+      }
+
+      case 'set-share-limit': {
+        if (args.length < 2) { addLine('error', 'Usage: set-share-limit <share_id> <max_downloads>'); break; }
+        const id = await findId(args[0], 'file_shares');
+        if (!id) break;
+        const max = parseInt(args[1]);
+        if (isNaN(max)) { addLine('error', 'Invalid number.'); break; }
+        const { error } = await supabase.from('file_shares').update({ max_downloads: max }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share download limit → ${max}.`);
+        break;
+      }
+
+      case 'set-share-expiry': {
+        if (args.length < 2) { addLine('error', 'Usage: set-share-expiry <share_id> <YYYY-MM-DD>'); break; }
+        const id = await findId(args[0], 'file_shares');
+        if (!id) break;
+        const expires_at = new Date(args[1]).toISOString();
+        const { error } = await supabase.from('file_shares').update({ expires_at }).eq('id', id);
+        addLine(error ? 'error' : 'output', error ? error.message : `✓ Share expiry set to ${args[1]}.`);
         break;
       }
 
@@ -365,6 +638,29 @@ export default function AdminApi() {
         (expFiles.data || []).forEach(f => addLine('output', `  📄 ${f.id.slice(0, 8)}… │ ${f.original_name} │ expired: ${format(new Date(f.expires_at!), 'yyyy-MM-dd')}`));
         addLine('output', `Expired shares: ${expShares.data?.length || 0}`);
         (expShares.data || []).forEach(s => addLine('output', `  🔗 ${s.id.slice(0, 8)}… │ token: ${s.share_token.slice(0, 8)}… │ expired: ${format(new Date(s.expires_at!), 'yyyy-MM-dd')}`));
+        if (!(expFiles.data?.length || expShares.data?.length)) addLine('output', 'Nothing expired. 🎉');
+        break;
+      }
+
+      case 'purge-expired': {
+        const now = new Date().toISOString();
+        // Delete expired files (with storage cleanup)
+        const { data: expFiles } = await supabase.from('files').select('id,storage_path').lt('expires_at', now).not('expires_at', 'is', null);
+        if (expFiles?.length) {
+          const paths = expFiles.map(f => f.storage_path).filter(Boolean);
+          if (paths.length) await supabase.storage.from('cdn-files').remove(paths);
+          for (const f of expFiles) {
+            await supabase.from('files').delete().eq('id', f.id);
+          }
+        }
+        // Delete expired shares
+        const { data: expShares } = await supabase.from('file_shares').select('id').lt('expires_at', now).not('expires_at', 'is', null);
+        if (expShares?.length) {
+          for (const s of expShares) {
+            await supabase.from('file_shares').delete().eq('id', s.id);
+          }
+        }
+        addLine('output', `✓ Purged ${expFiles?.length || 0} expired file(s) and ${expShares?.length || 0} expired share(s).`);
         break;
       }
 
@@ -405,6 +701,21 @@ export default function AdminApi() {
         break;
       }
 
+      // ── SQL Quick Peek ────────────────────────────
+
+      case 'sql': {
+        const table = args[0];
+        if (!table) { addLine('error', 'Usage: sql <table> [limit]\nTables: files, api_keys, file_shares, folders, user_stats, user_roles, access_logs'); break; }
+        const allowed = ['files', 'api_keys', 'file_shares', 'folders', 'user_stats', 'user_roles', 'access_logs'];
+        if (!allowed.includes(table)) { addLine('error', `Table not allowed. Available: ${allowed.join(', ')}`); break; }
+        const limit = parseInt(args[1]) || 5;
+        const { data, error } = await supabase.from(table as any).select('*').limit(limit).order('created_at', { ascending: false });
+        if (error) { addLine('error', error.message); break; }
+        addLine('output', `SELECT * FROM ${table} LIMIT ${limit}:`);
+        addLine('output', JSON.stringify(data || [], null, 2));
+        break;
+      }
+
       // ── AI Assistant ──────────────────────────────
 
       case 'ai': {
@@ -417,12 +728,20 @@ export default function AdminApi() {
           if (!session) { addLine('error', 'Not authenticated.'); break; }
 
           // Gather context
-          const [keysRes, filesRes, statsRes] = await Promise.all([
+          const [keysRes, filesRes, statsRes, sharesRes, foldersRes] = await Promise.all([
             supabase.from('api_keys').select('id,name,is_active,scopes,user_id,key_prefix').limit(50),
-            supabase.from('files').select('id,original_name,size,is_public,view_count,user_id').order('created_at', { ascending: false }).limit(20),
+            supabase.from('files').select('id,original_name,size,is_public,view_count,user_id,short_code,tags').order('created_at', { ascending: false }).limit(20),
             supabase.from('user_stats').select('*'),
+            supabase.from('file_shares').select('id,file_id,is_active,download_count,max_downloads,user_id').limit(20),
+            supabase.from('folders').select('id,name,user_id').limit(20),
           ]);
-          const context = `API Keys (${keysRes.data?.length || 0}): ${JSON.stringify((keysRes.data || []).slice(0, 10))}\nRecent Files (${filesRes.data?.length || 0}): ${JSON.stringify((filesRes.data || []).slice(0, 10))}\nUser Stats: ${JSON.stringify(statsRes.data || [])}`;
+          const context = [
+            `API Keys (${keysRes.data?.length || 0}): ${JSON.stringify((keysRes.data || []).slice(0, 10))}`,
+            `Recent Files (${filesRes.data?.length || 0}): ${JSON.stringify((filesRes.data || []).slice(0, 10))}`,
+            `User Stats: ${JSON.stringify(statsRes.data || [])}`,
+            `Shares (${sharesRes.data?.length || 0}): ${JSON.stringify((sharesRes.data || []).slice(0, 10))}`,
+            `Folders (${foldersRes.data?.length || 0}): ${JSON.stringify((foldersRes.data || []).slice(0, 10))}`,
+          ].join('\n');
 
           const res = await supabase.functions.invoke('admin-ai', {
             body: { prompt: question, context },
@@ -509,7 +828,7 @@ export default function AdminApi() {
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="glass-card p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium flex items-center gap-2"><Terminal className="w-4 h-4" /> Admin Terminal</h2>
-          <span className="text-xs text-muted-foreground flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI-Powered</span>
+          <span className="text-xs text-muted-foreground flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI-Powered • v3.0</span>
         </div>
         <div
           ref={termRef}
@@ -520,7 +839,7 @@ export default function AdminApi() {
             <div key={i} className={`whitespace-pre-wrap ${
               line.type === 'input' ? 'text-primary' :
               line.type === 'error' ? 'text-destructive' :
-              line.type === 'ai' ? 'text-accent-foreground' :
+              line.type === 'ai' ? 'text-purple-400' :
               'text-foreground/80'
             }`}>
               {line.text}
